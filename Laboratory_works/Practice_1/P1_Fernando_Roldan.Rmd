@@ -1,0 +1,391 @@
+---
+title: "Práctica 1 Sistemas Inteligentes para la Gestión en la Empresa"
+author: "Fernando Roldán Zafra"
+output: html_document
+---
+
+# Introducción
+En esta primera práctica de Sistemas Inteligentes para la Gestión de la Empresa se va a analizar un problema que hoy en día cobra bastante relevancia. Y es que se trata de clasificar una serie de transacciones online en fraudulentas o no fraudulentas. Este problema, debido a la cantidad de transacciones financieras que se realizan hoy en día es de mucha relevancia y es que conocer que transacciones son legitimas o no pueden acarrear perdidas de grandes cantidades de dinero. Por lo tanto, en el presente trabajo aplicaremos diversas técnicas de análisis de datos para entrenar un modelo de clasificación que nos permita acercarnos lo más posible a la realidad.
+
+Los datos que utilizaremos están recogidos en la plataforma ***Kaggle*** [1]. Estos datos pertenecen a la competición ***IEEE-CIS Fraud Detection*** [2]. Sin nada más que aclarar, empezamos por la descripción de los datos que tenemos para trabajar.
+
+# Descripción del Dataset
+Antes de realizar ningún tipo de técnica para la solución como tal del problema deberemos estudiar que datos tenemos y que forma tienen. Y es que no podremos realizar un análisis de calidad si no conocemos con que materia prima trabajamos.
+
+```{r, warning=FALSE}
+#Cargamos los paquetes
+library(plyr)
+library(caret)
+library(funModeling)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(rpart)
+
+# Cargamos los datos de un fichero en formato csv
+train_raw <- read.csv("./train_innerjoin.csv", sep=",",  na = c('NA', 'n/a', '', ' '))
+test_raw <- read.csv("./test_innerjoin.csv", sep=",",  na = c('NA', 'n/a', '', ' '))
+# Mostramos los nombres de las columnas
+length(train_raw)
+```
+
+Como se puede ver disponemos de 434 variables, lo cual puede ser bastante abrumador a priori. Pasamos a describir el significado de alguna de las columnas:
+
+\begin{itemize}
+\item \textbf{TransactionID}: En primer lugar tenemos el id de la transacción. Esta columna no nos resultará util, ya que no se relaciona en manera alguna con el atributo a clasificar.
+\item \textbf{isFraud}: En este caso se trata del atributo que queremos clasificar. Este es un atributo binario que toma como valores 0 o 1.
+\item \textbf{TransactionDT}: Fecha de la transacción desde un instante de tiempo inicial.
+\item \textbf{TransactionAmt}: Cantidad en dólares de la transacción.
+\item \textfb{ProductCD}: Código del producto o servicio adquirido.
+\item \textfb{card1-card6}: Diferentes datos de la tarjeta con la que se realizó la transacción.
+\item \textfb{addr1-addr2}: Código de región y país del pago.
+\item \textfb{P-R_email}: Dirección de email del comprador y del vendedor.
+\item \textfb{DeviceType - DeviceInfo}: Tipo e información del dispositivo.
+\end{itemize}
+
+Como se puede ver, tenemos una gran cantidad de información a nuestra disposición. Sin embargo, muchas de estas columnas o atributos no son fácilmente interpretables y es que no se ofrece una descripción clara de algunos de ellos. Sin embargo, con estos atributos deberemos de ser capaces de obtener la clasificación buscada.
+
+# Exploración
+
+En esta sección vamos a ver que forma tienen los datos. De esta forma, en secciones posteriores podremos preprocesar dichos datos y adaptarlos a nuestras necesidades.
+
+Primero representaremos 3 variables que a priori pueden ser interesantes, estas son ***isFraud***, ***ProductCD*** y ***DeviceType***. Estas pueden resultar interesantes, ya que son variables categóricas y nos interesa saber si hay desbalanceo en las variables.
+
+```{r}
+#Graficas de valores categóricos
+#IsFraud
+ggplot(train_raw, aes(x=isFraud,fill=as.factor(isFraud))) + geom_bar() + theme_bw()
+table(train_raw$isFraud)
+
+#Porcentaje de aparicion de fraude
+#prop.table(table(train_raw$isFraud))
+
+#ProductCD
+ggplot(train_raw, aes(x=ProductCD,fill=as.factor(ProductCD))) + geom_bar() + theme_bw()
+
+#Devicetype
+ggplot(train_raw, aes(x=DeviceType,fill=as.factor(DeviceType))) + geom_bar() + theme_bw()
+
+```
+
+
+Como se puede ver los datos están tremendamente desbalanceados, ya que la mayor parte de los datos pertenecen a casos de transacciones no fraudulentas. Más concretamente, el 92% de los datos son de transacciones no fraudulentas. Ademas de esto, podemos ver que en lo referente al código de los productos que estos están más balanceados. Aun así el significado de cada uno de estos no está claro, por lo que es difícilmente interpretable.
+Por último, podemos ver que la mayor parte de las transacciones se han realizado en un escritorio aunque no podemos despreciar la proporción de transacciones en móvil.
+
+Veamos ahora la relación que tienen la cantidad de la transacción, el tipo de producto y el tipo de dispositivo con la posibilidad de que una transacción sea fraudulenta
+
+```{r}
+#Visualización de Fraude por cantidad
+ggplot(train_raw, aes(x=TransactionAmt, fill=as.factor(isFraud))) + theme_bw() +
+  geom_histogram(binwidth=5)
+
+#Visualización de Fraude por producto
+ggplot(train_raw, aes(x=ProductCD,fill=as.factor(isFraud))) + geom_bar() + theme_bw()
+
+#Visualización de Fraude por tipo de dispositivo
+ggplot(train_raw, aes(x=DeviceType,fill=as.factor(isFraud))) + geom_bar() + theme_bw()
+
+```
+
+Como se puede ver en la primera gráfica, la mayor parte de las transacciones son de poco dinero por lo que es de esperar que de igual forma los fraudes también sean de poco dinero. Por otro lado vemos como de forma general, el código de producto que es más susceptible al fraude es "C" siendo el resto un conjunto minoritario. Y por último, Podemos ver como el tipo de dispositivo es prácticamente irrelevante en lo que al fraude se refiere, ya que prácticamente el número de fraudes es el mismo independientemente del tipo de dispositivo.
+
+Por otro lado, otro aspecto interesante a analizar es ver los valores perdidos y que cantidad de ellos hay en nuestro dataset. El método utilizado está sacado de [3]
+
+```{r}
+#Valores perdidos
+#Buscamos todas las columnas con valores perdidos
+missing_train <- colSums(is.na(train_raw))[colSums(is.na(train_raw)) > 0] %>% sort(decreasing=T)
+#Mostramos como salida el numero de columnas con valores perdidos
+paste(length(missing_train), 'columas de', ncol(train_raw), 'tienen valores perdidos en train')
+#Calculamos el porcentaje de valores perdidos para estas columnas y lo redondeamos quedandonos con las dos primeras cifras decimales
+missing_train_percentage <- round(missing_train/nrow(train_raw), 2)
+#Mostramos los porcentajes mayores que 0.5
+missing_train_percentage[missing_train_percentage > .5] %>% t
+```
+
+Como se puede ver, hay gran cantidad de atributos en nuestro dataset que prácticamente están vacíos. Estos atributos difícilmente nos podrán aportar algo de información para nuestro propósito. Entre ellos podemos destacar los atributos de ***dist1*** y ***dist2*** los cuales prácticamente están vacíos. Lo mismo ocurre con los atributos ***M1-M9*** los cuales están totalmente vacíos.
+Sin embargo podemos ver como aparentemente, los datos de las tarjetas o de las direcciones de correo no aparecen en la lista, por lo que puede ser interesante observar que comportamiento tienen estas variables. De entre ***Card1-Card6*** solo ***Card4*** y ***Card6*** son categóricas, refiriéndose la primera a la compañía de la tarjeta (Mastercard, visa, etc) y la segunda al tipo de esta (debito o crédito)
+
+```{r}
+#Card4
+ggplot(train_raw, aes(x=card4,fill=as.factor(isFraud))) + geom_bar() + theme_bw()
+
+#Card6
+ggplot(train_raw, aes(x=card6,fill=as.factor(isFraud))) + geom_bar() + theme_bw()
+```
+
+En las gráficas se puede ver como a priori estas variables apenas tienen relevancia en cuanto a si una transacción es fraudulenta o no. Aunque se puede ver como en el caso de la compañía de la tarjeta "visa" tiene más casos de fraude que "mastercard" se puede ver como la primera tiene una presencia en el dataset mucho mayor por lo que tiene sentido que haya más casos de fraude que en la segunda. Algo similar ocurre con el tipo de la tarjeta, ya que charge "credit" y "debit" tienen prácticamente la misma proporción de fraude.
+
+Otra característica que puede ser interesante como se comentó anteriormente es la de los dominios de los correos electrónicos, tanto del comprador como del vendedor:
+
+```{r}
+#P_emaildomain
+# Extraemos un resumen acerca de los emails.
+recuento_emails<-summary(train_raw$P_emaildomain)
+# Convertimos los resultados anteriores en una matriz para poder trabajar con ellos.
+emails_matriz<-data.matrix(recuento_emails)
+# Obtenemos los nombres.
+emails<-names(recuento_emails)
+# También obtenemos el número de muestras de cada email
+recuento<-emails_matriz[1:length(emails_matriz)]
+# Componemos un data frame con los emails y las ocurrencias de cada dominio
+dataframe<-data.frame(emails=emails, recuento=recuento)
+dataframe <- dataframe[order(dataframe$recuento, decreasing = TRUE),]
+dataframe <- head(dataframe, 10)
+
+#Las dibujamos
+ggplot(data=dataframe, aes(x=emails, y=recuento)) + geom_bar(stat="identity")+coord_flip()
+
+
+
+#R_emaildomain
+# Extraemos un resumen acerca de los emails.
+recuento_emails<-summary(train_raw$R_emaildomain)
+# Convertimos los resultados anteriores en una matriz para poder trabajar con ellos.
+emails_matriz<-data.matrix(recuento_emails)
+# Obtenemos los nombres.
+emails<-names(recuento_emails)
+# También obtenemos el número de muestras de cada email
+recuento<-emails_matriz[1:length(emails_matriz)]
+# Componemos un data frame con los emails y las ocurrencias de cada dominio
+dataframe<-data.frame(emails=emails, recuento=recuento)
+dataframe <- dataframe[order(dataframe$recuento, decreasing = TRUE),]
+dataframe <- head(dataframe, 10)
+
+ggplot(data=dataframe, aes(x=emails, y=recuento)) + geom_bar(stat="identity")+coord_flip()
+
+rm(dataframe, emails_matriz, emails, recuento_emails, recuento)
+
+
+```
+
+Como podemos ver, los dominios están bastante distribuidos pero hay que destacar que como era de esperar gmail es el predominante.
+
+# Pre-procesamiento
+
+Una vez que nos hemos hecho una idea de la forma general que tiene nuestro dataset, podemos pasar a preprocesar los datos. Por lo tanto en este apartado transformaremos nuestro dataset para poder optimizarlo en la resolución de nuestro problema.
+
+Para hacer esto tenemos muchas opciones, entre ellas podemos enumerar las siguientes:
+
+\begin{itemize}
+\item Transformación y limpieza de valores numéricos
+\item Selección de variables
+\item Reducción y ampliación de datos
+\end{itemize}
+
+Empezaremos por la selección de variables, esto quiere decir que eliminaremos muchas de las variables que no nos aporten información útil para el problema. En este punto se van a eliminar variables en función a varios criterios. Primero eliminaremos tanto variables con una gran cantidad de valores perdidos como variables con la mayor parte de sus valores a 0. Por otro lado eliminaremos las filas que no nos aporten demasiada información (como que siempre sean los mismos dos o tres valores). Definiremos por tanto que todas las variables con más del 50% de los valores perdidos o más del 90% de sus valores a 0 no nos aportan suficiente información. Por otro lado, cualquier columna con menos de tres variables diferentes también sera eliminada (excluyendo por supuesto a la variable que queremos predecir)[5].
+```{r, results='hide'}
+status <- df_status(train_raw)
+```
+
+```{r}
+#Excluimos "isFraud"
+status <- status %>% 
+  filter(variable != 'isFraud')
+
+#Identificamos columnas con mas del 90% de 0
+zero_cols <- status %>%
+  filter(p_zeros > 90) %>%
+  select(variable)
+
+#identificamos columnas con más del 50% de na
+na_cols <- status %>%
+  filter(p_na > 50) %>%
+  select(variable)
+
+#identificamos columnas con menos de 3 valores diferentes
+
+eq_cols <- status %>%
+  filter(unique <= 3) %>%
+  select(variable)
+
+#Eliminamos columnas
+remove_cols <- bind_rows(
+  list(
+    zero_cols,
+    na_cols,
+    eq_cols
+  )
+)
+
+data <- train_raw %>%
+  select(-one_of(remove_cols$variable))
+
+paste('Se han eliminado', ncol(train_raw) - ncol(data), 'columnas de', ncol(train_raw))
+```
+Una vez eliminadas las filas pasamos a estudiar la correlación entre las distintas variables de nuestro dataset y nuestra variable objetivo. Para ello primero habrá que convertir las variables categóricas en numéricas y excluir los valores vacíos o perdidos.
+
+```{r}
+data_num <- data %>%
+  #Eliminamos filas con na
+  na.exclude() %>%
+  #Convertimos todas las variables no numericas a numéricas
+  mutate_if(is.character, as.factor) %>%
+  mutate_if(is.factor, as.numeric)
+
+#Calculamos la correlación de las variables con "isFraud" y guardamos las variables mas correladas
+cor_target <- correlation_table(data_num, target='isFraud')
+important_vars <- cor_target %>% 
+  filter(abs(isFraud) >= 0.2)
+
+#Guardamos solo las variables más correladas
+data_clean <- data %>%
+  select(one_of(important_vars$Variable))
+
+testID = test_raw$TransactionID
+test_clean <- test_raw %>%
+  select(one_of(important_vars$Variable))
+test_clean$TransactionID = testID
+rm(data_num)
+
+```
+
+Ya que la clase "isFraud" está tremendamente desbalanceada, vamos a realizar un "undersampling" de la clase mayoritaria, es decir vamos a seleccionar un número menor de filas con "isFraud" igual a 0. De esta forma ademas de mejorar los tiempos de ejecución haremos que la clasificación se realice mejor. Aun así probaremos a realizar la clasificación con undersampling y sin under sampling para comparar los resultados[6]. Ademas de lo comentado anteriormente, antes de realizar el modelo de predicción se van a eliminar las filas que contengan algún valor perdido y es que aunque no sea el mejor modo de tratar los valores perdidos por motivos de tiempo se realizara este método.
+
+```{r}
+data_clean$isFraud = as.factor(data_clean$isFraud)
+data_clean <- data_clean %>%
+  na.exclude()
+cat("Total de filas por clase isFraud antes de hacer under sampling")
+table(data_clean$isFraud)
+#under sampling
+predictors <- select(data_clean, -isFraud)
+data_down <- downSample(x = predictors, y = data_clean$isFraud, yname = 'isFraud')
+cat("\nTotal de filas por clase isFraud despues de hacer under sampling")
+table(data_down$isFraud)
+```
+Una vez modificados los datasets pasamos a crear el modelo de clasificación a partir de ellos.
+
+# Clasificación
+
+Vamos a utilizar varios modelos de clasificación en este apartado. Cada uno de ellos se realizará con los conjuntos habiendo realizado oversampling, undersampling o ninguno de ellos. Primero creamos el conjunto de validación a partir del conjunto de train en una proporción 70/30.
+
+```{r, results="hide"}
+#Primero convertimos las clases de valores numericos a texto para prevenir errores más adelante
+data_clean$isFraud = mapvalues(data_clean$isFraud, from = c("0", "1"), to = c("NotFraud", "Fraud"))
+data_down$isFraud = mapvalues(data_down$isFraud, from = c("0", "1"), to = c("NotFraud", "Fraud"))
+
+set.seed(0)
+trainIndex <- createDataPartition(data_clean$isFraud, p = .7, list = FALSE)
+train_clean <- data_clean[trainIndex, ] 
+val_clean   <- data_clean[-trainIndex, ]
+
+trainIndex <- createDataPartition(data_down$isFraud, p = .7, list = FALSE)
+train_down <- data_down[trainIndex, ] 
+val_down   <- data_down[-trainIndex, ]
+```
+
+Una vez creados los conjuntos de datos necesarios pasamos al entrenamiento del primer modelo. Este es Random forest. 
+
+```{r}
+#Configuración del modelo
+rfCtrl <- trainControl(
+      verboseIter = F, 
+      classProbs = TRUE, 
+      method = "repeatedcv", 
+      number = 10, 
+      repeats = 1, 
+      summaryFunction = twoClassSummary)
+#Configuracion módelo sin under sampling 
+rfParametersGrid <- expand.grid(
+      .mtry = c(sqrt(ncol(train_clean)))) 
+
+#Entrenamiento modelo sin under sampling
+rfModel <- train(
+    isFraud ~ ., 
+    data = train_clean, 
+    method = "rf", 
+    metric = "Accuracy", 
+    trControl = rfCtrl, 
+    tuneGrid = rfParametersGrid) 
+
+#Configuracion módelo con under sampling
+mini_rfParametersGrid <- expand.grid(
+      .mtry = c(sqrt(ncol(train_down))))  
+
+#Entrenamiento módelo con under sampling
+mini_rfModel <- train(
+    isFraud ~ ., 
+    data = train_down, 
+    method = "rf", 
+    metric = "Accuracy", 
+    trControl = rfCtrl, 
+    tuneGrid = mini_rfParametersGrid) 
+
+prediction <- predict(rfModel, val_clean, type = "raw") 
+cm_train <- confusionMatrix(prediction, val_clean$isFraud)
+
+mini_prediction <- predict(mini_rfModel, val_down, type = "raw") 
+mini_cm_train <- confusionMatrix(mini_prediction, val_down$isFraud)
+
+cat("Resultados modelo sin under sampling\n")
+cm_train
+
+cat("\n\n Resultados modelo con under sampling\n")
+mini_cm_train
+```
+Como se puede ver, el mejor modelo es el que no utiliza under sampling con una precisión 0.97 sobre el conjunto de validación contra un 0.76. Esto tiene mucho sentido, ya que en el caso de utilizar esta técnica eliminamos muchos de los datos y perdemos una gran cantidad de información. Esto no quiere decir que esta técnica no sea útil, sino que en este caso y debido al gran desbalanceo entre las clases a predecir no es útil, en un dataset con un menor desbalanceo puede llegar a ser útil.
+
+Una vez realizado el primer modelo con random forest vamos a complementarlo con otro algoritmo de clasificación. Este será el particionado recursivo. Como se verá en el siguiente bloque de código el proceso de configuración será similar al del modelo anterior.
+
+```{r}
+#Configuracion módelo
+rpartParametersGrid <- expand.grid(.cp = c(0.01, 0.05))
+
+#Entrenamiento modelo sin under sampling
+rpartModel <- train(
+    isFraud ~ ., 
+    data = train_clean, 
+    method = "rpart", 
+    metric = "Accuracy", 
+    trControl = rfCtrl, 
+    tuneGrid = rpartParametersGrid) 
+
+
+#Entrenamiento módelo con under sampling
+mini_rpartModel <- train(
+    isFraud ~ ., 
+    data = train_down, 
+    method = "rpart", 
+    metric = "Accuracy", 
+    trControl = rfCtrl, 
+    tuneGrid = rpartParametersGrid) 
+
+prediction_rpart <- predict(rpartModel, val_clean, type = "raw") 
+cm_train_rpart <- confusionMatrix(prediction_rpart, val_clean$isFraud)
+
+mini_prediction_rpart <- predict(mini_rpartModel, val_down, type = "raw") 
+mini_cm_train_rpart <- confusionMatrix(mini_prediction_rpart, val_down$isFraud)
+
+cat("Resultados modelo sin under sampling\n")
+cm_train_rpart
+
+cat("\n\n Resultados modelo con under sampling\n")
+mini_cm_train_rpart
+```
+
+En este segundo modelo obtenemos unos resultados bastante parecidos en cuanto al conjunto con y sin under sampling. El motivo es el mismo que el especificado anteriormente, la perdida de información al reducir tanto el conjunto de entrenamiento. Los valores de precisión son de 0.96 y de 0.73 que aunque algo peor que en el caso anterior utilizando random forest cabe destacar que la eficiencia a nivel de tiempo de computo es tremenda, tardando este último modelo menos de un minuto mientras que el anterior tardaba cerca de 2 horas.
+
+## Discusión de resultados
+
+Como se ha podido ver en el apartado anterior los resultados obtenidos son bastante esperanzadores, habiendo obtenido 0.97 como precisión en el mejor modelo, un resultado bastante aceptable. Sin embargo cabe destacar, como se ha comentado, la rapidez de ejecución de un algoritmo frente al otro, que aunque se pierda cerca de 0.01 de precisión de un modelo con respecto al otro, la ganancia en términos de coste computacional es tremenda.
+Por otro lado, como se ha podido ver el resultado de la ejecución con under sampling no ha dado sus frutos. Aunque era de esperar que al reducir el desbalanceo de las clases se pudiese mejorar el resultado al prevenir el sobreaprendizaje de una clase con respecto a la otra, se ha visto que al reducir tanto el dataset el modelo no es capaz de generalizar correctamente y de "aprender" a diferenciar una clase de otra. Por lo tanto esta técnica no nos es útil en nuestro propósito.
+
+# Conclusiones
+
+Como se ha visto a lo largo de esta práctica es muy complejo interpretar los datos de los que a veces se dispone y es que aunque es de esperar que por ejemplo el fraude este muy relacionado con la cantidad de dinero de la transacción hemos visto que no es así, y aunque está relacionado, dicha relación no es lo suficientemente representativa. Por otro lado, hemos visto como hay varios datos en nuestro dataset que se encuentran tremendamente relacionados con el hecho de que la transacción sea fraudulenta o no. Sin embargo, dichos datos no son fácilmente interpretables y es que no se ofrece una descripción de su significado, aunque es de esperar que estos sean variables calculadas previamente a partir del resto de variables.
+
+Esto nos hace pensar que en la mayor parte de los casos, no nos basta con aplicar uno u otro método de predicción sobre los datos que tenemos sino que habrá ocasiones en las que deberemos pararnos y calcular nuevos datos sobre los disponibles. Obteniendo así mejores datos con los que realizar nuestro modelo.
+
+Ademas de esto se ha visto la técnica del under sampling que como se ha comentado no nos ha sido de utilidad, ya que debido al desbalanceo en la clase objetivo se pierde demasiada información al realizar dicha técnica. Cosa que nos muestra que a veces es mejor trabajar con muchos datos poco balanceados que con muy pocos y muy balanceados.
+
+
+# Bibliografía
+
+1. *Kaggle* https://www.kaggle.com
+2. *IEEE-CIS Fraud Detection Competition* https://www.kaggle.com/c/ieee-fraud-detection/data
+3. *IEEE extensive EDA & LGB with R* https://www.kaggle.com/psystat/ieee-extensive-eda-lgb-with-r
+4. Oscar Ramírez-Alán, *Correlación y Regresión Lineal*, https://rpubs.com/osoramirez/316691
+5. Juan Gomez Romero, *Apuntes de clase de SIGE*, https://github.com/jgromero/sige2020/tree/master/Pr%C3%A1cticas
+6. *Practical Guide to deal with Imbalanced Classification Problems in R*,  https://www.analyticsvidhya.com/blog/2016/03/practical-guide-deal-imbalanced-classification-problems/
+7. *The caret Package / Random forest* http://topepo.github.io/caret/train-models-by-tag.html#random-forest
